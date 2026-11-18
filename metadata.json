@@ -1,0 +1,6 @@
+{
+  "name": "AD78",
+  "description": "AD78 live WinGo color prediction and Aviator platform with synchronized rounds, auto UPI and bank wallet, and 24x7 support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
