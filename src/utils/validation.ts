@@ -91,7 +91,31 @@ export function validateMixedPassword(password: string): ValidationResult {
   return { valid: true };
 }
 
-export const MIN_DEPOSIT = 100;
+export function validateDepositUtr(raw: string): ValidationResult {
+  const clean = raw.trim().toUpperCase().replace(/\s+/g, '');
+  if (!/^[A-Z0-9]{8,24}$/.test(clean)) {
+    return {
+      valid: false,
+      error: 'Fake/Invalid UTR: Enter a genuine 12-digit UTR or bank transaction reference (8-24 chars).',
+    };
+  }
+  if (/^(.)\1{5,}$/.test(clean) || new Set(clean.split('')).size < 4) {
+    return {
+      valid: false,
+      error: 'Fake UTR rejected: Repeated character references are not allowed.',
+    };
+  }
+  const fakeSeqs = ['0123456789', '1234567890', '123456789012', '9876543210', '987654321098'];
+  if (fakeSeqs.some((s) => clean.includes(s))) {
+    return {
+      valid: false,
+      error: 'Fake UTR rejected: Sequential dummy numbers are not allowed.',
+    };
+  }
+  return { valid: true };
+}
+
+export const MIN_DEPOSIT = 200;
 export const MAX_DEPOSIT = 50000;
 export const MIN_WITHDRAWAL = 110;
 export const WINGO_MIN_BET = 1;

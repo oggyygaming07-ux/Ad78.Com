@@ -58,7 +58,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({
     e.preventDefault();
     setError('');
     if (!mobile.trim()) {
-      setError('Enter your registered mobile number or username.');
+      setError('Enter your registered User ID (e.g. AD78U1001), mobile number, or username.');
       return;
     }
     if (!password.trim()) {
@@ -136,7 +136,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({
       if (navigator.share) {
         await navigator.share({
           title: 'AD78',
-          text: 'Play WinGo & Aviator on AD78!',
+          text: 'Play AD78 Games!',
           url: window.location.origin,
         });
       } else {
@@ -203,19 +203,19 @@ export const AuthViews: React.FC<AuthViewsProps> = ({
             <div className="text-center">
               <h1 className="text-2xl font-bold text-white">Sign in</h1>
               <p className="mt-1 text-xs text-slate-300">
-                Please enter your mobile number/username &amp; password.
+                Sign in on any phone with your User ID, mobile number, or username &amp; password.
               </p>
             </div>
 
             <div>
               <label className="mb-1.5 block text-xs font-semibold text-white">
-                Mobile Number / Username <span className="text-rose-400">*</span>
+                User ID / Mobile Number / Username <span className="text-rose-400">*</span>
               </label>
               <input
                 type="text"
                 value={mobile}
                 onChange={(e) => setMobile(e.target.value)}
-                placeholder="10-digit Mobile or Username"
+                placeholder="e.g. AD78U1001, rahul78, or Mobile"
                 className="w-full rounded-xl bg-white px-4 py-3 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-400"
               />
             </div>

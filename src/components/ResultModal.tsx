@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Trophy, X, XCircle } from 'lucide-react';
 import { WingoRound } from '../types';
 
@@ -20,14 +20,17 @@ interface ResultModalProps {
 }
 
 export const ResultModal: React.FC<ResultModalProps> = ({ data, onClose }) => {
-  // Auto-dismiss after 2 seconds for both WIN and LOSS
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Auto-dismiss quickly (1.35s) as a small non-blocking floating popup
   useEffect(() => {
     if (!data) return;
     const timer = window.setTimeout(() => {
-      onClose();
-    }, 2000);
+      onCloseRef.current();
+    }, 1350);
     return () => window.clearTimeout(timer);
-  }, [data, onClose]);
+  }, [data]);
 
   if (!data) return null;
 
@@ -43,74 +46,64 @@ export const ResultModal: React.FC<ResultModalProps> = ({ data, onClose }) => {
     : 'bg-slate-700';
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px] px-4">
+    <div className="pointer-events-none fixed top-16 left-0 right-0 z-50 flex justify-center px-3">
       <div
-        className={`pointer-events-auto relative w-full max-w-sm rounded-3xl border-2 px-5 py-5 shadow-[0_20px_60px_rgba(0,0,0,0.75)] text-center space-y-3 transition-all ${
+        className={`pointer-events-auto relative w-full max-w-[290px] rounded-2xl border px-3.5 py-2.5 shadow-[0_12px_35px_rgba(0,0,0,0.65)] backdrop-blur-md transition-all ${
           data.won
-            ? 'bg-[#0b2620]/95 border-emerald-400/80'
-            : 'bg-[#26111c]/95 border-rose-400/75'
+            ? 'bg-[#08241d]/95 border-emerald-400/80'
+            : 'bg-[#260f19]/95 border-rose-400/75'
         }`}
       >
         <button
           onClick={onClose}
           aria-label="Close result popup"
-          className="absolute right-3 top-3 rounded-full p-1 text-slate-300 hover:bg-white/10 hover:text-white"
+          className="absolute right-2 top-2 rounded-full p-0.5 text-slate-300 hover:bg-white/10 hover:text-white"
         >
-          <X className="h-4 w-4" />
+          <X className="h-3.5 w-3.5" />
         </button>
 
-        {/* Center Winning Number Ball or Aviator Icon */}
-        <div className="flex justify-center">
+        <div className="flex items-center gap-2.5 pr-4">
           {round ? (
             <div
-              className={`flex h-16 w-16 items-center justify-center rounded-full text-3xl font-extrabold text-white border-2 border-white/80 shadow-xl ${ballBg}`}
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-extrabold text-white border border-white/80 shadow ${ballBg}`}
             >
               {round.number}
             </div>
           ) : (
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10">
               {data.won ? (
-                <Trophy className="h-7 w-7 text-amber-400" />
+                <Trophy className="h-4 w-4 text-amber-400" />
               ) : (
-                <XCircle className="h-7 w-7 text-rose-400" />
+                <XCircle className="h-4 w-4 text-rose-400" />
               )}
             </div>
           )}
-        </div>
 
-        {/* Win/Loss Headline & Color/Size Prediction */}
-        <div>
-          <div
-            className={`text-2xl font-extrabold uppercase tracking-wider ${
-              data.won ? 'text-emerald-300' : 'text-rose-300'
-            }`}
-          >
-            {data.won ? 'WIN' : 'LOSS'}
-          </div>
-          {round && (
-            <div className="mt-1 text-xs font-bold text-white uppercase">
-              Number {round.number} · {round.colors.join('+')} · {round.size}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className={`text-sm font-extrabold uppercase tracking-wider ${
+                  data.won ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                {data.won ? 'WIN' : 'LOSS'}
+              </span>
+              <span
+                className={`text-sm font-extrabold tabular-nums ${
+                  data.won ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                {data.won ? `+₹${data.payout.toFixed(2)}` : `-₹${data.staked.toFixed(2)}`}
+              </span>
             </div>
-          )}
-          <div className="mt-0.5 text-[11px] text-slate-300">{data.subtitle}</div>
-        </div>
 
-        {/* Payout / Loss Amount & Updated White Balance */}
-        <div className="rounded-2xl bg-black/30 border border-white/10 px-4 py-2.5 flex items-center justify-between">
-          <div className="text-left">
-            <div className="text-[10px] text-slate-400 uppercase">Result</div>
-            <div
-              className={`text-base font-bold tabular-nums ${
-                data.won ? 'text-emerald-300' : 'text-rose-300'
-              }`}
-            >
-              {data.won ? `+₹${data.payout.toFixed(2)}` : `-₹${data.staked.toFixed(2)}`}
+            <div className="truncate text-[10px] font-medium text-slate-300">
+              {round
+                ? `#${round.number} · ${round.colors.join('+').toUpperCase()} · ${round.size.toUpperCase()}`
+                : data.subtitle}
             </div>
-          </div>
-          <div className="text-right">
-            <div className="text-[10px] text-slate-400 uppercase">Balance</div>
-            <div className="text-base font-bold text-white tabular-nums">
-              ₹{data.updatedBalance.toFixed(2)}
+            <div className="text-[10px] font-semibold text-white/90 tabular-nums">
+              Bal: ₹{data.updatedBalance.toFixed(2)}
             </div>
           </div>
         </div>

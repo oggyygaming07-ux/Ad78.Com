@@ -16,7 +16,9 @@ export const SupportCenter: React.FC<SupportCenterProps> = ({
   onBack,
 }) => {
   const [contactName, setContactName] = useState(user?.username || '');
-  const [mobile, setMobile] = useState(user?.mobile || '');
+  const [mobile, setMobile] = useState(
+    () => user?.mobile || localStorage.getItem('ad78_support_mobile') || ''
+  );
   const [category, setCategory] = useState(initialCategory);
   const [message, setMessage] = useState('');
   const [screenshotData, setScreenshotData] = useState<string>('');
@@ -27,7 +29,9 @@ export const SupportCenter: React.FC<SupportCenterProps> = ({
 
   const loadTickets = async (targetMobile?: string) => {
     try {
-      const q = targetMobile ? `?mobile=${encodeURIComponent(targetMobile)}` : '';
+      const cleanMob = (targetMobile || '').trim();
+      if (!token && !/^\d{10}$/.test(cleanMob)) return;
+      const q = cleanMob ? `?mobile=${encodeURIComponent(cleanMob)}` : '';
       const res = await fetch(`/api/support/tickets${q}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
@@ -40,8 +44,12 @@ export const SupportCenter: React.FC<SupportCenterProps> = ({
   };
 
   useEffect(() => {
-    loadTickets(user?.mobile);
-  }, [user?.mobile, token]);
+    const activeMob = user?.mobile || mobile;
+    loadTickets(activeMob);
+    if (!token && !/^\d{10}$/.test(activeMob.trim())) return;
+    const id = window.setInterval(() => loadTickets(activeMob), 4000);
+    return () => window.clearInterval(id);
+  }, [user?.mobile, mobile, token]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -82,6 +90,9 @@ export const SupportCenter: React.FC<SupportCenterProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not register complaint');
 
+      if (/^\d{10}$/.test(mobile.trim())) {
+        localStorage.setItem('ad78_support_mobile', mobile.trim());
+      }
       setMessage('');
       setScreenshotData('');
       setScreenshotName('');

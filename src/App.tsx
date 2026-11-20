@@ -2,15 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AdminPanel } from './components/AdminPanel';
 import { AuthScreenMode, AuthViews } from './components/AuthViews';
 import { AviatorGame } from './components/AviatorGame';
-import { BrandLogo } from './components/BrandLogo';
+import { ChickenRoadGame } from './components/ChickenRoadGame';
+import { CrystalGame } from './components/CrystalGame';
+import { DiceGame } from './components/DiceGame';
 import { HomeDashboard } from './components/HomeDashboard';
+import { MinesGame } from './components/MinesGame';
+import { MinesProGame } from './components/MinesProGame';
 import { ResultModal, ResultModalData } from './components/ResultModal';
 import { SupportCenter } from './components/SupportCenter';
+import { TowerRushGame } from './components/TowerRushGame';
 import { MenuPage, WalletAndMenu } from './components/WalletAndMenu';
 import { WingoGame } from './components/WingoGame';
 import {
   AviatorState,
   BetRecord,
+  MinesProState,
   PlatformConfig,
   TransactionRecord,
   UserProfile,
@@ -25,6 +31,12 @@ type AppScreen =
   | { view: 'auth'; mode: AuthScreenMode }
   | { view: 'wingo' }
   | { view: 'aviator' }
+  | { view: 'mines_pro' }
+  | { view: 'mines' }
+  | { view: 'dice' }
+  | { view: 'chicken_road' }
+  | { view: 'crystal' }
+  | { view: 'tower_rush' }
   | { view: 'support'; category?: string }
   | { view: 'menu'; page: MenuPage };
 
@@ -48,12 +60,26 @@ function UserApp() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [clocks, setClocks] = useState<Record<WingoMode, WingoModeClock> | null>(null);
   const [aviator, setAviator] = useState<AviatorState | null>(null);
+  const [minesPro, setMinesPro] = useState<MinesProState | null>(null);
   const [platformConfig, setPlatformConfig] = useState<PlatformConfig | null>(null);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setShowSplash(false), 1100);
+    const t = window.setTimeout(() => setShowSplash(false), 1500);
     return () => window.clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    if (platformConfig?.appName?.trim()) {
+      document.title = `${platformConfig.appName.trim()} — Live Arena`;
+    }
+  }, [platformConfig?.appName]);
+
+  useEffect(() => {
+    const disabled = platformConfig?.disabledGames || [];
+    if (disabled.includes(screen.view)) {
+      setScreen({ view: 'home' });
+    }
+  }, [platformConfig?.disabledGames, screen.view]);
 
   const [bets, setBets] = useState<BetRecord[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
@@ -76,7 +102,14 @@ function UserApp() {
       });
       if (!res.ok) return;
       const data = await res.json();
-      setBets(data.bets || []);
+      const rawBets: BetRecord[] = Array.isArray(data.bets) ? data.bets : [];
+      const seenBetIds = new Set<string>();
+      const uniqueBets = rawBets.filter((b) => {
+        if (!b?.id || seenBetIds.has(b.id)) return false;
+        seenBetIds.add(b.id);
+        return true;
+      });
+      setBets(uniqueBets);
       setTransactions(data.transactions || []);
       if (data.summary) setSummary(data.summary);
     } catch {
@@ -97,6 +130,13 @@ function UserApp() {
       .then((r) => r.json())
       .then((d) => {
         if (d?.state) setAviator(d.state);
+      })
+      .catch(() => {});
+
+    fetch('/api/mines-pro/state')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.state) setMinesPro(d.state);
       })
       .catch(() => {});
 
@@ -138,16 +178,21 @@ function UserApp() {
           if (msg.type === 'wingo:init') {
             if (msg.clocks) setClocks(msg.clocks);
             if (msg.aviator) setAviator(msg.aviator);
+            if (msg.minesPro) setMinesPro(msg.minesPro);
             if (msg.platformConfig) setPlatformConfig(msg.platformConfig);
           } else if (msg.type === 'platform:update' && msg.platformConfig) {
             setPlatformConfig(msg.platformConfig);
           } else if (msg.type === 'wingo:tick') {
             if (msg.clocks) {
+              let periodChanged = false;
               setClocks((prev) => {
                 if (!prev) return null;
                 const next: Record<WingoMode, WingoModeClock> = { ...prev };
                 (['30s', '1m', '3m'] as WingoMode[]).forEach((m) => {
                   if (msg.clocks[m] && prev[m]) {
+                    if (prev[m].periodId !== msg.clocks[m].periodId) {
+                      periodChanged = true;
+                    }
                     next[m] = {
                       ...msg.clocks[m],
                       history: prev[m].history,
@@ -156,12 +201,28 @@ function UserApp() {
                 });
                 return next;
               });
+              if (periodChanged) {
+                window.setTimeout(() => {
+                  fetch('/api/wingo/state')
+                    .then((r) => r.json())
+                    .then((d) => {
+                      if (d?.clocks) setClocks(d.clocks);
+                      if (d?.platformConfig) setPlatformConfig(d.platformConfig);
+                    })
+                    .catch(() => {});
+                }, 450);
+              }
             }
             if (msg.aviator) {
               setAviator(msg.aviator);
             }
+            if (msg.minesPro) {
+              setMinesPro(msg.minesPro);
+            }
           } else if ((msg.type === 'aviator:state' || msg.type === 'aviator:tick') && msg.state) {
             setAviator(msg.state);
+          } else if ((msg.type === 'mines_pro:state' || msg.type === 'mines_pro:tick') && msg.state) {
+            setMinesPro(msg.state);
           } else if (msg.type === 'aviator:settlement') {
             if (typeof msg.balance === 'number') {
               setUser((u) => (u ? { ...u, balance: msg.balance } : u));
@@ -173,6 +234,23 @@ function UserApp() {
             setResultModal({
               title: 'LOSS',
               subtitle: `Aviator · Flew away @ ${Number(msg.crashPoint || 1).toFixed(2)}x`,
+              won: false,
+              staked: Number(msg.staked || 0),
+              payout: 0,
+              netProfit: -Number(msg.staked || 0),
+              updatedBalance: Number(msg.balance ?? 0),
+            });
+          } else if (msg.type === 'mines_pro:settlement') {
+            if (typeof msg.balance === 'number') {
+              setUser((u) => (u ? { ...u, balance: msg.balance } : u));
+            }
+            if (tokenRef.current) {
+              fetchUserHistory(tokenRef.current);
+            }
+            playLossTone();
+            setResultModal({
+              title: 'LOSS',
+              subtitle: `Mines Pro · Blasted @ ${Number(msg.crashPoint || 1).toFixed(2)}x`,
               won: false,
               staked: Number(msg.staked || 0),
               payout: 0,
@@ -270,24 +348,58 @@ function UserApp() {
   };
 
   const handleBetPlaced = (bet: BetRecord) => {
-    setBets((prev) => [bet, ...prev]);
+    setBets((prev) => {
+      const idx = prev.findIndex((b) => b.id === bet.id);
+      if (idx !== -1) {
+        const next = [...prev];
+        next[idx] = bet;
+        return next;
+      }
+      return [bet, ...prev];
+    });
     if (token) {
       fetchUserHistory(token);
     }
   };
 
+  const handleCloseResultModal = useCallback(() => {
+    setResultModal(null);
+  }, []);
+
   if (showSplash) {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-[#130b29] via-[#0a1426] to-[#08101d] px-6">
-        <div className="animate-pulse">
-          <BrandLogo size="lg" />
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_50%_35%,#172554_0%,#091224_52%,#040812_100%)] px-6">
+        {/* Ambient Dual Halo Glow */}
+        <div className="pointer-events-none absolute h-80 w-80 rounded-full bg-cyan-500/15 blur-3xl animate-pulse" />
+        <div className="pointer-events-none absolute h-64 w-64 translate-y-12 rounded-full bg-amber-500/10 blur-3xl" />
+
+        <div className="relative flex items-center justify-center">
+          {/* Outer Rotating Orbital Ring */}
+          <div className="absolute h-44 w-44 rounded-full border border-cyan-400/30 border-t-cyan-300 border-r-amber-300/60 animate-orbit-slow gpu-layer" />
+          {/* Inner Counter-Rotating Ring */}
+          <div className="absolute h-36 w-36 rounded-full border border-amber-400/25 border-b-amber-300 border-l-cyan-400/60 animate-orbit-reverse gpu-layer" />
+
+          {/* Main AD78 Emblem Card */}
+          <div className="relative flex flex-col items-center justify-center h-28 w-44 rounded-3xl bg-gradient-to-b from-[#132344]/95 to-[#091226]/95 border border-cyan-400/45 shadow-[0_0_60px_rgba(34,211,238,0.28),inset_0_1px_0_rgba(255,255,255,0.2)] backdrop-blur-md">
+            <div className="flex items-baseline gap-0.5 select-none">
+              <span className="text-4xl sm:text-5xl font-black tracking-tight bg-gradient-to-b from-white via-cyan-100 to-cyan-400 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(34,211,238,0.45)]">
+                AD
+              </span>
+              <span className="text-4xl sm:text-5xl font-black tracking-tight bg-gradient-to-b from-amber-200 via-amber-300 to-orange-500 bg-clip-text text-transparent drop-shadow-[0_2px_12px_rgba(251,191,36,0.45)]">
+                78
+              </span>
+            </div>
+            <div className="mt-1 flex items-center gap-1.5">
+              <span className="h-1 w-4 rounded-full bg-cyan-400/80" />
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping" />
+              <span className="h-1 w-4 rounded-full bg-amber-400/80" />
+            </div>
+          </div>
         </div>
-        <div className="mt-5 h-1.5 w-36 overflow-hidden rounded-full bg-white/10">
-          <div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-cyan-400 to-teal-400" />
+
+        <div className="mt-8 h-1.5 w-48 overflow-hidden rounded-full bg-white/10 border border-white/10">
+          <div className="h-full w-full rounded-full bg-gradient-to-r from-cyan-400 via-teal-300 to-amber-300 animate-splash-bar gpu-layer" />
         </div>
-        <p className="mt-3 text-xs font-semibold tracking-wider text-slate-300">
-          AD78 · LOADING...
-        </p>
       </div>
     );
   }
@@ -298,10 +410,17 @@ function UserApp() {
         <HomeDashboard
           user={user}
           aviator={aviator}
+          minesPro={minesPro}
           platformConfig={platformConfig}
           onOpenAuth={(mode) => setScreen({ view: 'auth', mode })}
           onOpenWingo={() => setScreen({ view: 'wingo' })}
           onOpenAviator={() => setScreen({ view: 'aviator' })}
+          onOpenMinesPro={() => setScreen({ view: 'mines_pro' })}
+          onOpenMines={() => setScreen({ view: 'mines' })}
+          onOpenDice={() => setScreen({ view: 'dice' })}
+          onOpenChickenRoad={() => setScreen({ view: 'chicken_road' })}
+          onOpenCrystal={() => setScreen({ view: 'crystal' })}
+          onOpenTowerRush={() => setScreen({ view: 'tower_rush' })}
           onOpenMenu={(page) => setScreen({ view: 'menu', page })}
           onOpenSupport={() => setScreen({ view: 'support' })}
         />
@@ -358,6 +477,103 @@ function UserApp() {
         />
       )}
 
+      {screen.view === 'mines_pro' && (
+        <MinesProGame
+          user={user}
+          token={token}
+          minesPro={minesPro}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Mines Pro Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+          onCashoutSuccess={({ multiplier, payout, staked, balance, roundId }) => {
+            if (token) fetchUserHistory(token);
+            setResultModal({
+              title: 'WIN',
+              subtitle: `Mines Pro · Cashed Out @ ${multiplier.toFixed(2)}x (${roundId})`,
+              won: true,
+              staked,
+              payout,
+              netProfit: Number((payout - staked).toFixed(2)),
+              updatedBalance: balance,
+            });
+          }}
+        />
+      )}
+
+      {screen.view === 'mines' && (
+        <MinesGame
+          user={user}
+          token={token}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Mines / Dice Game Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
+
+      {screen.view === 'dice' && (
+        <DiceGame
+          user={user}
+          token={token}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Mines / Dice Game Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
+
+      {screen.view === 'chicken_road' && (
+        <ChickenRoadGame
+          user={user}
+          token={token}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Chicken Road Game Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
+
+      {screen.view === 'crystal' && (
+        <CrystalGame
+          user={user}
+          token={token}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Crystal Game Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
+
+      {screen.view === 'tower_rush' && (
+        <TowerRushGame
+          user={user}
+          token={token}
+          myBets={bets}
+          onBack={() => setScreen({ view: 'home' })}
+          onRequireAuth={() => setScreen({ view: 'auth', mode: 'login' })}
+          onOpenDeposit={() => setScreen({ view: 'menu', page: 'deposit' })}
+          onOpenSupport={() => setScreen({ view: 'support', category: 'Tower Rush Game Issue' })}
+          onBalanceUpdate={handleBalanceUpdate}
+          onBetPlaced={handleBetPlaced}
+        />
+      )}
+
       {screen.view === 'support' && (
         <SupportCenter
           user={user}
@@ -387,7 +603,7 @@ function UserApp() {
         />
       )}
 
-      <ResultModal data={resultModal} onClose={() => setResultModal(null)} />
+      <ResultModal data={resultModal} onClose={handleCloseResultModal} />
     </>
   );
 }

@@ -31,10 +31,12 @@ import {
   X,
 } from 'lucide-react';
 import { BetRecord, PlatformConfig, TransactionRecord, UserProfile } from '../types';
+import { compressImageFile } from '../utils/imageCompress';
 import {
   MAX_DEPOSIT,
   MIN_DEPOSIT,
   MIN_WITHDRAWAL,
+  validateDepositUtr,
   validateMixedPassword,
 } from '../utils/validation';
 
@@ -116,15 +118,52 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
   onRefreshHistory,
   onLogout,
 }) => {
-  const activeUpiId = platformConfig?.upiId || 'ad78.pay@upi';
-  const activeBankHolder = platformConfig?.bankHolder || 'AD78 PAYMENTS ENTERPRISE';
-  const activeBankName = platformConfig?.bankName || 'HDFC BANK';
-  const activeBankAccount = platformConfig?.bankAccountNumber || '50200078451290';
-  const activeBankIfsc = platformConfig?.bankIfsc || 'HDFC0001780';
+  const activeUpiSlots = React.useMemo(() => {
+    const raw = platformConfig?.upiSlots?.filter((s) => s.enabled && (s.upiId || s.qrImageData));
+    if (raw && raw.length > 0) return raw;
+    return [
+      {
+        id: 'upi-1',
+        label: 'UPI 1 (Primary)',
+        upiId: platformConfig?.upiId || 'ad78.pay@upi',
+        qrImageData: platformConfig?.qrImageData,
+        enabled: true,
+      },
+    ];
+  }, [platformConfig]);
 
-  const [depAmount, setDepAmount] = useState('100');
-  const [depMode, setDepMode] = useState<'upi' | 'bank'>('upi');
-  const [depStep, setDepStep] = useState<'select' | 'pay'>('select');
+  const activeBankSlots = React.useMemo(() => {
+    const raw = platformConfig?.bankSlots?.filter((b) => b.enabled && b.bankAccountNumber);
+    if (raw && raw.length > 0) return raw;
+    return [
+      {
+        id: 'bank-1',
+        label: 'Bank Account 1',
+        bankHolder: platformConfig?.bankHolder || 'AD78 PAYMENTS ENTERPRISE',
+        bankName: platformConfig?.bankName || 'HDFC BANK',
+        bankAccountNumber: platformConfig?.bankAccountNumber || '50200078451290',
+        bankIfsc: platformConfig?.bankIfsc || 'HDFC0001780',
+        enabled: true,
+      },
+    ];
+  }, [platformConfig]);
+
+  const [selectedUpiIdx, setSelectedUpiIdx] = useState(0);
+  const [selectedBankIdx, setSelectedBankIdx] = useState(0);
+
+  const safeUpiSlot = activeUpiSlots[selectedUpiIdx] || activeUpiSlots[0];
+  const safeBankSlot = activeBankSlots[selectedBankIdx] || activeBankSlots[0];
+
+  const activeUpiId = safeUpiSlot.upiId || platformConfig?.upiId || 'ad78.pay@upi';
+  const activeCustomQr = safeUpiSlot.qrImageData;
+  const activeBankHolder = safeBankSlot.bankHolder;
+  const activeBankName = safeBankSlot.bankName;
+  const activeBankAccount = safeBankSlot.bankAccountNumber;
+  const activeBankIfsc = safeBankSlot.bankIfsc;
+
+  const [depAmount, setDepAmount] = useState('200');
+  const [depMode, setDepMode] = useState<'upi' | 'bank'>('bank');
+  const [showDepositAccount, setShowDepositAccount] = useState(false);
   const [depUpiApp, setDepUpiApp] = useState<string>('PhonePe');
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [depRef, setDepRef] = useState('');
@@ -174,7 +213,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
 
   const handleBack = () => {
     setMsg(null);
-    setDepStep('select');
+    setShowDepositAccount(false);
     if (page === 'menu') {
       onBackHome();
     } else {
@@ -185,6 +224,40 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
   const buildUpiUri = (amt: number) =>
     `upi://pay?pa=${encodeURIComponent(activeUpiId)}&pn=AD78&am=${amt.toFixed(2)}&cu=INR&tn=AD78Deposit`;
 
+  useEffect(() => {
+    if (selectedUpiIdx >= activeUpiSlots.length) setSelectedUpiIdx(0);
+  }, [activeUpiSlots.length, selectedUpiIdx]);
+
+  useEffect(() => {
+    if (selectedBankIdx >= activeBankSlots.length) setSelectedBankIdx(0);
+  }, [activeBankSlots.length, selectedBankIdx]);
+
+  // Live QR regeneration whenever Admin updates UPI ID or uploads Custom QR via WebSocket
+  useEffect(() => {
+    if (!showDepositAccount || depMode !== 'upi') return;
+    if (activeCustomQr) {
+      setQrDataUrl(activeCustomQr);
+      return;
+    }
+    const amt = Number(depAmount) || MIN_DEPOSIT;
+    const upiUri = `upi://pay?pa=${encodeURIComponent(activeUpiId)}&pn=AD78&am=${amt.toFixed(2)}&cu=INR&tn=AD78Deposit`;
+    let cancelled = false;
+    QRCode.toDataURL(upiUri, {
+      width: 220,
+      margin: 2,
+      color: { dark: '#09101d', light: '#ffffff' },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showDepositAccount, depMode, depAmount, activeUpiId, activeCustomQr]);
+
   const handleProceedDeposit = async () => {
     setMsg(null);
     if (!user || !token) {
@@ -193,6 +266,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
     }
     const amt = Number(depAmount);
     if (!Number.isFinite(amt) || amt < MIN_DEPOSIT || amt > MAX_DEPOSIT) {
+      setShowDepositAccount(false);
       setMsg({
         type: 'err',
         text: `Deposit amount must be between ₹${MIN_DEPOSIT} and ₹${MAX_DEPOSIT.toLocaleString('en-IN')}.`,
@@ -201,19 +275,23 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
     }
 
     if (depMode === 'upi') {
-      try {
-        const upiUri = buildUpiUri(amt);
-        const url = await QRCode.toDataURL(upiUri, {
-          width: 220,
-          margin: 2,
-          color: { dark: '#09101d', light: '#ffffff' },
-        });
-        setQrDataUrl(url);
-      } catch {
-        setQrDataUrl('');
+      if (activeCustomQr) {
+        setQrDataUrl(activeCustomQr);
+      } else {
+        try {
+          const upiUri = buildUpiUri(amt);
+          const url = await QRCode.toDataURL(upiUri, {
+            width: 220,
+            margin: 2,
+            color: { dark: '#09101d', light: '#ffffff' },
+          });
+          setQrDataUrl(url);
+        } catch {
+          setQrDataUrl('');
+        }
       }
     }
-    setDepStep('pay');
+    setShowDepositAccount(true);
   };
 
   const handleLaunchUpiApp = (appName: 'PhonePe' | 'Google Pay' | 'Paytm') => {
@@ -237,21 +315,17 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
     document.body.removeChild(link);
   };
 
-  const handleDepScreenshotChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDepScreenshotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setMsg({ type: 'err', text: 'Payment screenshot image must be under 2 MB.' });
-      return;
+    setMsg(null);
+    try {
+      const compressed = await compressImageFile(file, 1200, 0.82);
+      setDepScreenshotName(file.name);
+      setDepScreenshotData(compressed);
+    } catch {
+      setMsg({ type: 'err', text: 'Could not load screenshot image. Please choose a valid JPG/PNG photo.' });
     }
-    setDepScreenshotName(file.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setDepScreenshotData(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
   };
 
   const handleDeposit = async (e: React.FormEvent) => {
@@ -269,15 +343,19 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
       });
       return;
     }
-    if (depRef.trim().length < 4) {
-      setMsg({ type: 'err', text: 'Enter your 12-digit UTR / Payment Reference number.' });
+    const utrCheck = validateDepositUtr(depRef);
+    if (!utrCheck.valid) {
+      setMsg({ type: 'err', text: utrCheck.error || 'Enter a valid genuine 12-digit UTR number.' });
       return;
     }
-    if (depMode === 'upi' && !depScreenshotData) {
-      setMsg({ type: 'err', text: 'Please upload your UPI payment screenshot image along with the UTR.' });
+    if (!depScreenshotData) {
+      setMsg({ type: 'err', text: 'Please upload your payment screenshot image along with the UTR.' });
       return;
     }
-    const methodLabel = depMode === 'upi' ? `${depUpiApp} UPI` : 'Bank Account IMPS/NEFT';
+    const methodLabel =
+      depMode === 'upi'
+        ? `${depUpiApp} UPI (${safeUpiSlot.label})`
+        : `Bank (${safeBankSlot.bankName} · ${safeBankSlot.label})`;
     setSubmitting(true);
     try {
       const res = await fetch('/api/wallet/deposit', {
@@ -287,7 +365,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
           amount: amt,
           method: methodLabel,
           reference: depRef.trim(),
-          screenshotData: depMode === 'upi' ? depScreenshotData : undefined,
+          screenshotData: depScreenshotData,
         }),
       });
       const data = await res.json();
@@ -296,7 +374,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
       setDepRef('');
       setDepScreenshotData('');
       setDepScreenshotName('');
-      setDepStep('select');
+      setShowDepositAccount(false);
       onRefreshHistory();
       setDepSubmittedModal({
         transaction: data.transaction,
@@ -554,10 +632,36 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
 
         {/* ACCOUNT MENU LIST */}
         {page === 'menu' && (
-          <div className="rounded-2xl bg-[#101a2f] border border-white/10 overflow-hidden">
-            <div className="px-4 py-3 border-b border-white/10 text-xs font-bold tracking-wider text-slate-300 uppercase">
-              Account &amp; Wallet
-            </div>
+          <div className="space-y-3">
+            {user && (
+              <div className="rounded-2xl bg-[#101a2f] border border-cyan-500/30 p-4 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold text-white">{user.username}</div>
+                  <div className="text-[11px] text-cyan-300 font-semibold tabular-nums mt-0.5">
+                    User ID: <span className="font-mono">{user.id}</span> · {user.mobile}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(user.id);
+                    setMsg({
+                      type: 'ok',
+                      text: `User ID ${user.id} copied! Use this ID & password to login on any phone.`,
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-400/15 border border-cyan-400/40 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:bg-cyan-400/25 shrink-0"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>Copy ID</span>
+                </button>
+              </div>
+            )}
+
+            <div className="rounded-2xl bg-[#101a2f] border border-white/10 overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/10 text-xs font-bold tracking-wider text-slate-300 uppercase">
+                Account &amp; Wallet
+              </div>
             <div className="divide-y divide-white/5">
               {MENU_ITEMS.map((item) => {
                 const Icon = item.icon;
@@ -615,124 +719,224 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
               )}
             </div>
           </div>
+          </div>
         )}
 
-        {/* DEPOSIT SCREEN (STEP 1: SELECT METHOD & AMOUNT -> PROCEED -> STEP 2: QR/APP OR BANK) */}
+        {/* DEPOSIT SCREEN (STEP 1: AMOUNT + SUBMIT -> STEP 2: ACCOUNT DETAILS & UTR/SCREENSHOT BELOW) */}
         {page === 'deposit' && (
-          <div className="rounded-2xl bg-[#101a2f] border border-cyan-500/30 p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-white">Deposit</h2>
-                <p className="text-xs text-slate-300">
-                  Min ₹{MIN_DEPOSIT} · Max ₹{MAX_DEPOSIT.toLocaleString('en-IN')}
-                </p>
-              </div>
-              <span className="rounded-lg bg-amber-500/20 border border-amber-400/30 px-3 py-1 text-xs font-semibold text-amber-200">
-                Admin Verified
-              </span>
-            </div>
-
-            {depStep === 'select' ? (
-              <div className="space-y-4">
-                {/* Step 1: Only Method Selection & Amount */}
-                <div>
-                  <label className="mb-1.5 block text-xs font-semibold text-white">
-                    Choose Deposit Method
-                  </label>
-                  <div className="grid grid-cols-2 gap-2 rounded-xl bg-[#08101f] p-1 border border-white/10">
-                    <button
-                      type="button"
-                      onClick={() => setDepMode('upi')}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-2.5 text-xs font-bold transition ${
-                        depMode === 'upi' ? 'bg-cyan-400 text-slate-950' : 'text-slate-300'
-                      }`}
-                    >
-                      <QrCode className="h-3.5 w-3.5" />
-                      <span>UPI Payment</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDepMode('bank')}
-                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg py-2.5 text-xs font-bold transition ${
-                        depMode === 'bank' ? 'bg-cyan-400 text-slate-950' : 'text-slate-300'
-                      }`}
-                    >
-                      <Building2 className="h-3.5 w-3.5" />
-                      <span>Bank Account (+₹1–₹2)</span>
-                    </button>
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-[#0d1729] border border-cyan-500/30 p-4 sm:p-5 space-y-4">
+              <div className="rounded-2xl border border-cyan-400/50 bg-[#08101f] px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-950 font-black text-xs">
+                    ₹
+                  </div>
+                  <div>
+                    <h2 className="text-sm sm:text-base font-extrabold tracking-wide text-white uppercase">
+                      DEPOSIT
+                    </h2>
+                    <p className="text-[11px] text-slate-300">
+                      Min ₹{MIN_DEPOSIT} · Max ₹{MAX_DEPOSIT.toLocaleString('en-IN')}
+                    </p>
                   </div>
                 </div>
+                <span className="rounded-lg bg-amber-500/20 border border-amber-400/30 px-2.5 py-1 text-[11px] font-semibold text-amber-200">
+                  Admin Verified
+                </span>
+              </div>
 
-                {depMode === 'bank' && (
-                  <div className="rounded-xl bg-emerald-500/10 border border-emerald-400/30 px-3.5 py-2.5 text-xs text-emerald-200 flex items-center gap-2">
-                    <Gift className="h-4 w-4 shrink-0 text-emerald-300" />
-                    <span>
-                      Bank Account deposits include an instant extra bonus: <strong>+₹1</strong> (under ₹500) or <strong>+₹2</strong> (₹500+).
-                    </span>
-                  </div>
-                )}
-
+              <div className="space-y-4">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold text-white">
-                    Enter Manual Deposit Amount (₹100 – ₹50,000)
-                  </label>
-                  <input
-                    type="number"
-                    min={100}
-                    max={50000}
-                    value={depAmount}
-                    onChange={(e) => setDepAmount(e.target.value)}
-                    placeholder="Minimum ₹100"
-                    className="w-full rounded-xl bg-[#08101f] border border-white/15 px-4 py-3 text-base font-semibold text-white focus:outline-none focus:border-cyan-400"
-                  />
-                  <div className="mt-2 grid grid-cols-4 gap-2">
-                    {[100, 500, 1000, 5000].map((v) => (
-                      <button
-                        key={v}
-                        type="button"
-                        onClick={() => setDepAmount(String(v))}
-                        className={`rounded-lg py-2 text-xs font-semibold transition ${
-                          Number(depAmount) === v
-                            ? 'bg-cyan-400 text-slate-950'
-                            : 'bg-white/10 text-white hover:bg-cyan-500/20'
-                        }`}
-                      >
-                        ₹{v}
-                      </button>
-                    ))}
+                  <div className="text-xs font-bold text-slate-200 mb-1">
+                    Please Select Deposit Method:
+                  </div>
+                  <p className="text-xs font-semibold text-white leading-relaxed">
+                    Disclaimer: For faster and more reliable payments, please use the bank transfer option.
+                  </p>
+                </div>
+
+                {/* Method Pills: BANK (5% BONUS) | UPI | WHATSAPP DEPOSIT (No Crypto) */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDepMode('bank');
+                      setMsg(null);
+                    }}
+                    className={`rounded-full px-4 py-2 text-xs font-extrabold tracking-wide transition border ${
+                      depMode === 'bank'
+                        ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.45)]'
+                        : 'bg-[#101c31] text-slate-200 border-white/25 hover:bg-white/10'
+                    }`}
+                  >
+                    BANK ({platformConfig?.bankBonusPercent ?? 5}% BONUS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDepMode('upi');
+                      setMsg(null);
+                    }}
+                    className={`rounded-full px-5 py-2 text-xs font-extrabold tracking-wide transition border ${
+                      depMode === 'upi'
+                        ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.45)]'
+                        : 'bg-[#101c31] text-slate-200 border-white/25 hover:bg-white/10'
+                    }`}
+                  >
+                    UPI
+                  </button>
+                  {platformConfig?.supportWhatsappUrl &&
+                  /^https?:\/\//i.test(platformConfig.supportWhatsappUrl) ? (
+                    <a
+                      href={platformConfig.supportWhatsappUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full bg-[#1a8f4d] border border-emerald-400/60 px-4 py-2 text-xs font-extrabold tracking-wide text-white hover:brightness-110 transition"
+                    >
+                      WHATSAPP DEPOSIT
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onOpenSupport}
+                      className="rounded-full bg-[#1a8f4d] border border-emerald-400/60 px-4 py-2 text-xs font-extrabold tracking-wide text-white hover:brightness-110 transition"
+                    >
+                      WHATSAPP DEPOSIT
+                    </button>
+                  )}
+                </div>
+
+                {/* Account Option Sub-Tabs (OPTION 1 / OPTION 2 / OPTION 3) */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {depMode === 'bank'
+                    ? activeBankSlots.map((slot, idx) => (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          onClick={() => setSelectedBankIdx(idx)}
+                          className={`rounded-full px-4 py-2 text-xs font-extrabold tracking-wide transition border ${
+                            selectedBankIdx === idx
+                              ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_14px_rgba(34,211,238,0.4)]'
+                              : 'bg-[#101c31] text-slate-200 border-white/25 hover:bg-white/10'
+                          }`}
+                        >
+                          OPTION {idx + 1}
+                        </button>
+                      ))
+                    : activeUpiSlots.map((slot, idx) => (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          onClick={() => setSelectedUpiIdx(idx)}
+                          className={`rounded-full px-4 py-2 text-xs font-extrabold tracking-wide transition border ${
+                            selectedUpiIdx === idx
+                              ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_14px_rgba(34,211,238,0.4)]'
+                              : 'bg-[#101c31] text-slate-200 border-white/25 hover:bg-white/10'
+                          }`}
+                        >
+                          OPTION {idx + 1}
+                        </button>
+                      ))}
+                </div>
+
+                {/* Additive Preset Grid (+500 to +50000 max) */}
+                <div className="grid grid-cols-3 gap-2">
+                  {[500, 1000, 5000, 10000, 25000, 50000].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => {
+                        const cur = Number(depAmount) || 0;
+                        const next = cur >= MAX_DEPOSIT || cur === 0 ? v : Math.min(MAX_DEPOSIT, cur + v);
+                        setDepAmount(String(Math.min(MAX_DEPOSIT, next)));
+                      }}
+                      className="rounded-full bg-[#243047] hover:bg-[#31415f] border border-white/10 py-2 text-xs font-bold text-slate-100 tabular-nums transition"
+                    >
+                      +{v}
+                    </button>
+                  ))}
+                </div>
+
+                <p className="text-xs font-semibold text-amber-400 leading-relaxed">
+                  Note : Please allow 30mins for deposit amount to credit, in case of any further delay reach out to customer care.
+                </p>
+
+                {/* Enter Amount (INR) with Clear button */}
+                <div className="space-y-1.5">
+                  <div className="inline-block rounded-full border border-cyan-400/50 bg-[#08101f] px-3 py-1 text-[11px] font-bold text-white">
+                    Enter Amount (INR)
+                  </div>
+                  <div className="relative flex items-center rounded-full bg-[#364156] border border-white/15 px-4 py-2.5">
+                    <input
+                      type="number"
+                      min={MIN_DEPOSIT}
+                      max={MAX_DEPOSIT}
+                      value={depAmount}
+                      onChange={(e) => setDepAmount(e.target.value)}
+                      placeholder={`Min ₹${MIN_DEPOSIT} – Max ₹${MAX_DEPOSIT}`}
+                      className="w-full bg-transparent text-sm font-bold text-white placeholder:text-slate-300 focus:outline-none tabular-nums pr-14"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDepAmount('');
+                        setShowDepositAccount(false);
+                      }}
+                      className="absolute right-4 text-xs font-bold text-white hover:text-cyan-300"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Minimum deposit ₹{MIN_DEPOSIT} · Maximum deposit ₹{MAX_DEPOSIT.toLocaleString('en-IN')}
                   </div>
                 </div>
 
                 <button
                   type="button"
                   onClick={handleProceedDeposit}
-                  className="w-full rounded-xl bg-gradient-to-r from-cyan-400 to-teal-500 py-3.5 text-sm font-bold text-slate-950 shadow-lg hover:brightness-110 transition"
+                  className="w-full sm:w-48 rounded-full bg-gradient-to-r from-cyan-400 to-teal-500 hover:brightness-110 py-3 text-sm font-extrabold text-slate-950 shadow-lg transition"
                 >
-                  Proceed to Pay ₹{depAmount || 0}
+                  Submit
                 </button>
               </div>
-            ) : (
-              <form onSubmit={handleDeposit} className="space-y-4">
+            </div>
+
+            {showDepositAccount && (
+              <form
+                onSubmit={handleDeposit}
+                className="rounded-2xl bg-[#0d1729] border border-cyan-400/45 p-4 sm:p-5 space-y-4 shadow-xl"
+              >
                 <div className="flex items-center justify-between rounded-xl bg-[#08101f] border border-white/10 px-3.5 py-2.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDepStep('select');
-                      setMsg(null);
-                    }}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-cyan-300 hover:underline"
-                  >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    <span>Change Amount / Method</span>
-                  </button>
-                  <span className="text-sm font-bold text-white tabular-nums">
+                  <span className="text-xs font-bold text-cyan-300 uppercase tracking-wide">
+                    Official {depMode === 'upi' ? 'UPI' : 'Bank'} Payment Details
+                  </span>
+                  <span className="text-sm font-extrabold text-white tabular-nums">
                     Payable: ₹{Number(depAmount || 0).toFixed(2)}
                   </span>
                 </div>
 
                 {depMode === 'upi' ? (
                   <div className="space-y-3">
-                    {/* Scannable QR Code generated for exact amount */}
+                    {activeUpiSlots.length > 1 && (
+                      <div className="grid grid-cols-2 gap-2">
+                        {activeUpiSlots.map((slot, idx) => (
+                          <button
+                            key={slot.id}
+                            type="button"
+                            onClick={() => setSelectedUpiIdx(idx)}
+                            className={`rounded-xl py-2 px-3 text-xs font-bold border transition ${
+                              selectedUpiIdx === idx
+                                ? 'bg-cyan-400 text-slate-950 border-cyan-300'
+                                : 'bg-[#08101f] text-slate-200 border-white/15 hover:bg-white/10'
+                            }`}
+                          >
+                            {slot.label || `UPI ${idx + 1}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="flex flex-col items-center rounded-2xl bg-[#08101f] border border-cyan-500/30 p-4 text-center space-y-2.5">
                       <div className="text-xs font-bold text-cyan-300">
                         Scan QR Code with Any UPI App (₹{Number(depAmount || 0).toFixed(0)})
@@ -765,7 +969,6 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
                       </div>
                     </div>
 
-                    {/* Direct Tap to Open PhonePe / Google Pay / Paytm */}
                     <div>
                       <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-white">
                         <Smartphone className="h-3.5 w-3.5 text-cyan-300" />
@@ -807,44 +1010,35 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
                         </button>
                       </div>
                     </div>
-
-                    {/* Upload UPI Payment Screenshot Image (checked in Admin Panel) */}
-                    <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-white">
-                        Upload UPI Payment Screenshot *
-                      </label>
-                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-cyan-400/50 bg-[#08101f] px-4 py-3 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/10 transition">
-                        <ImagePlus className="h-4 w-4" />
-                        <span>
-                          {depScreenshotName
-                            ? `Uploaded: ${depScreenshotName}`
-                            : 'Choose Payment Screenshot Image'}
-                        </span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleDepScreenshotChange}
-                          className="hidden"
-                        />
-                      </label>
-                      {depScreenshotData && (
-                        <img
-                          src={depScreenshotData}
-                          alt="UPI payment screenshot preview"
-                          className="mt-2 max-h-40 rounded-xl border border-white/15 object-contain"
-                        />
-                      )}
-                    </div>
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {activeBankSlots.length > 1 && (
+                      <div className="grid grid-cols-3 gap-2">
+                        {activeBankSlots.map((slot, idx) => (
+                          <button
+                            key={slot.id}
+                            type="button"
+                            onClick={() => setSelectedBankIdx(idx)}
+                            className={`rounded-xl py-2 px-2 text-xs font-bold border transition ${
+                              selectedBankIdx === idx
+                                ? 'bg-cyan-400 text-slate-950 border-cyan-300'
+                                : 'bg-[#08101f] text-slate-200 border-white/15 hover:bg-white/10'
+                            }`}
+                          >
+                            {slot.label || `Bank ${idx + 1}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="rounded-xl bg-[#08101f] border border-white/10 p-4 text-xs space-y-2.5">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-cyan-300">
-                          AD78 Official Bank Account (IMPS / NEFT)
+                          AD78 Official Bank Account ({safeBankSlot.label})
                         </span>
-                        <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                          +₹{Number(depAmount) >= 500 ? 2 : 1} Bonus
+                        <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300 tabular-nums">
+                          +₹{((Number(depAmount || 0) * (platformConfig?.bankBonusPercent ?? 5)) / 100).toFixed(2)} Bonus ({platformConfig?.bankBonusPercent ?? 5}%)
                         </span>
                       </div>
                       <div className="flex justify-between">
@@ -895,6 +1089,33 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
 
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold text-white">
+                    Upload {depMode === 'upi' ? 'UPI' : 'Bank Transfer'} Payment Screenshot *
+                  </label>
+                  <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-cyan-400/50 bg-[#08101f] px-4 py-3 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/10 transition">
+                    <ImagePlus className="h-4 w-4" />
+                    <span>
+                      {depScreenshotName
+                        ? `Uploaded: ${depScreenshotName}`
+                        : 'Choose Payment Screenshot Image'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleDepScreenshotChange}
+                      className="hidden"
+                    />
+                  </label>
+                  {depScreenshotData && (
+                    <img
+                      src={depScreenshotData}
+                      alt="Payment screenshot preview"
+                      className="mt-2 max-h-40 rounded-xl border border-white/15 object-contain"
+                    />
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-white">
                     UTR / Transaction Reference Number *
                   </label>
                   <input
@@ -915,7 +1136,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
                   <span>
                     {submitting
                       ? 'Submitting Deposit...'
-                      : `Submit Deposit ₹${depAmount || 0}`}
+                      : `Submit Deposit Proof ₹${depAmount || 0}`}
                   </span>
                 </button>
               </form>
@@ -1180,7 +1401,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
                   onClick={() => onNavigate('deposit')}
                   className="rounded-xl bg-cyan-400 py-3 text-sm font-bold text-slate-950"
                 >
-                  Deposit (Min ₹100)
+                  Deposit (Min ₹200)
                 </button>
                 <button
                   onClick={() => onNavigate('withdraw')}
@@ -1215,7 +1436,26 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
                 <div key={b.id} className="flex items-center justify-between p-4 text-xs">
                   <div>
                     <div className="font-bold text-white uppercase">
-                      {b.game === 'aviator' ? 'Aviator' : `WinGo ${b.mode || ''}`} · {b.selection}
+                      {b.game === 'aviator'
+                        ? 'Aviator'
+                        : b.game === 'mines_pro'
+                        ? 'Mines Pro'
+                        : b.game === 'mines'
+                        ? 'Mines'
+                        : b.game === 'dice'
+                        ? 'Dice'
+                        : b.game === 'chicken_road'
+                        ? 'Chicken Road'
+                        : b.game === 'vertex'
+                        ? 'Vortex'
+                        : b.game === 'crystal'
+                        ? 'Crystal Poker'
+                        : b.game === 'tower_rush'
+                        ? 'Tower Rush'
+                        : b.game === 'money_coming'
+                        ? 'Money Coming'
+                        : `WinGo ${b.mode || ''}`}{' '}
+                      · {b.selection}
                     </div>
                     <div className="text-[11px] text-slate-300 mt-0.5">
                       Stake ₹{b.amount} {b.resultText ? `· ${b.resultText}` : ''}
@@ -1360,7 +1600,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
               <div className="text-xs font-bold text-amber-400 uppercase">Welcome Offer</div>
               <h3 className="mt-1 text-xl font-bold text-white">Deposit Rewards</h3>
               <p className="mt-1 text-xs text-slate-300">
-                Deposit ₹100 or more via UPI or Bank Account to start playing and earn Bank Deposit bonus rewards.
+                Deposit ₹200 or more via Bank Account or UPI to start playing and earn Bank Deposit bonus rewards.
               </p>
             </div>
             <div className="rounded-2xl bg-[#101a2f] border border-white/10 p-5">
@@ -1418,7 +1658,7 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
             <h2 className="text-base font-bold text-white">AD78 Platform Rules</h2>
             <p>1. WinGo Color Prediction supports 30 Sec, 1 Min, and 3 Min synchronized rounds with ₹1 to ₹5,000 manual bets.</p>
             <p>2. Aviator supports live synchronized flights with ₹10 minimum bet.</p>
-            <p>3. Auto Deposit accepts ₹100 to ₹50,000 via UPI (PhonePe/Paytm/Google Pay) or Bank Account.</p>
+            <p>3. Auto Deposit accepts ₹200 to ₹50,000 via UPI (PhonePe/Paytm/Google Pay) or Bank Account.</p>
             <p>4. Auto Withdrawal minimum is ₹110 to UPI or Bank Account. 24×7 Support is available for any issue.</p>
           </div>
         )}
@@ -1427,9 +1667,19 @@ export const WalletAndMenu: React.FC<WalletAndMenuProps> = ({
         {page === 'profile' && user && (
           <div className="space-y-4">
             <div className="rounded-2xl bg-[#101a2f] border border-white/10 p-5 space-y-3 text-xs">
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-slate-300">User ID</span>
-                <span className="font-bold text-cyan-300 tabular-nums">{user.id}</span>
+              <div className="flex justify-between items-center py-2 border-b border-white/10">
+                <span className="text-slate-300">User ID (Login ID)</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(user.id);
+                    setMsg({ type: 'ok', text: `Copied User ID: ${user.id}` });
+                  }}
+                  className="inline-flex items-center gap-1.5 font-bold text-cyan-300 tabular-nums"
+                >
+                  <span>{user.id}</span>
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
               </div>
               <div className="flex justify-between py-2 border-b border-white/10">
                 <span className="text-slate-300">Username</span>
